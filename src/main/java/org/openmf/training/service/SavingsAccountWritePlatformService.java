@@ -265,8 +265,7 @@ public class SavingsAccountWritePlatformService {
                 break;
 
             case "close":
-                close(account);
-                break;
+                throw new IllegalArgumentException("Use Close & settle to close savings accounts");
 
             case "freeze":
                 freeze(account);
@@ -313,17 +312,6 @@ public class SavingsAccountWritePlatformService {
 
         account.setStatus(SavingsAccountStatus.ACTIVE);
         account.setActivatedOn(LocalDateTime.now());
-    }
-
-    private void close(SavingsAccount account) {
-
-        if (!SavingsAccountStatus.ACTIVE.equals(account.getStatus())) {
-            throw new IllegalArgumentException(
-                    "Account can only be closed from ACTIVE status"
-            );
-        }
-
-        account.setStatus(SavingsAccountStatus.CLOSED);
     }
 
     private void freeze(SavingsAccount account) {

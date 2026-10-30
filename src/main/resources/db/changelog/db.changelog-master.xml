@@ -21,5 +21,9 @@
     <include file="db/changelog/changes/014-manual-interest-posting.xml"/>
     <include file="db/changelog/changes/015-savings-maker-checker.xml"/>
     <include file="db/changelog/changes/016-standing-instruction-schema.xml"/>
+    <include file="db/changelog/changes/017-standing-instruction-run-schema.xml"/>
+    <include file="db/changelog/changes/018-standing-instruction-run-rejection-reason.xml"/>
+    <include file="db/changelog/changes/019-standing-instruction-transfer-group-id-length.xml"/>
+    <include file="db/changelog/changes/020-add-savings-product-closure-fee.xml"/>
 <!--    <include file="db/changelog/changes/999-add-interest-rule-to-savings-product.xml"/>-->
 </databaseChangeLog>

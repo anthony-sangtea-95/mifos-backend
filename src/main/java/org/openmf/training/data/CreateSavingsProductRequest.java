@@ -6,6 +6,7 @@ public record CreateSavingsProductRequest(
         String name,
         BigDecimal nominalAnnualInterestRate,
         BigDecimal minRequiredBalance,
-        BigDecimal withdrawalFee
+        BigDecimal withdrawalFee,
+        BigDecimal closureFee
 ) {
 }

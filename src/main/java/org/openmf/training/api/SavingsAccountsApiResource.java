@@ -2,15 +2,18 @@ package org.openmf.training.api;
 
 import jakarta.ws.rs.*;
 import jakarta.ws.rs.core.MediaType;
+import jakarta.ws.rs.core.Response;
 
 import java.util.List;
 
 import org.openmf.training.data.*;
 import org.openmf.training.service.SavingsAccountAuditTrailWritePlatformService;
+import org.openmf.training.service.SavingsAccountClosureWritePlatformService;
 import org.openmf.training.service.SavingsAccountWritePlatformService;
 import org.openmf.training.service.SavingsAccountNoteWritePlatformService;
 import org.openmf.training.service.StandingInstructionReadPlatformService;
 import org.openmf.training.service.StandingInstructionWritePlatformService;
+import org.openmf.training.service.StandingInstructionExecutionWritePlatformService;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -19,29 +22,52 @@ import org.springframework.stereotype.Component;
 public class SavingsAccountsApiResource {
 
     private final SavingsAccountWritePlatformService accountService;
+    private final SavingsAccountClosureWritePlatformService closureService;
     private final SavingsAccountNoteWritePlatformService noteService;
     private final SavingsAccountAuditTrailWritePlatformService auditTrailService;
     private final StandingInstructionReadPlatformService standingInstructionService;
     private final StandingInstructionWritePlatformService standingInstructionWriteService;
+    private final StandingInstructionExecutionWritePlatformService standingInstructionExecutionService;
 
     public SavingsAccountsApiResource(
             SavingsAccountWritePlatformService accountService,
+            SavingsAccountClosureWritePlatformService closureService,
             SavingsAccountNoteWritePlatformService noteService,
             SavingsAccountAuditTrailWritePlatformService auditTrailService,
             StandingInstructionReadPlatformService standingInstructionService,
-            StandingInstructionWritePlatformService standingInstructionWriteService
+            StandingInstructionWritePlatformService standingInstructionWriteService,
+            StandingInstructionExecutionWritePlatformService standingInstructionExecutionService
     ) {
         this.accountService = accountService;
+        this.closureService = closureService;
         this.noteService = noteService;
         this.auditTrailService = auditTrailService;
         this.standingInstructionService = standingInstructionService;
         this.standingInstructionWriteService = standingInstructionWriteService;
+        this.standingInstructionExecutionService = standingInstructionExecutionService;
     }
 
     @GET
     @Path("savings-accounts")
     public List<SavingsAccountData> retrieveAll() {
         return accountService.retrieveAll();
+    }
+
+    @GET
+    @Path("savings-accounts/{accountId}/close-settlement-preview")
+    public SavingsAccountClosurePreviewData previewCloseAndSettle(
+            @PathParam("accountId") Long accountId
+    ) {
+        return closureService.preview(accountId);
+    }
+
+    @POST
+    @Path("savings-accounts/{accountId}/close-settlement")
+    public SavingsAccountClosureResultData closeAndSettle(
+            @PathParam("accountId") Long accountId,
+            CloseSavingsAccountRequest request
+    ) {
+        return closureService.closeAndSettle(accountId, request);
     }
 
     @GET
@@ -101,6 +127,15 @@ public class SavingsAccountsApiResource {
         return standingInstructionWriteService.create(accountId, request);
     }
 
+    @GET
+    @Path("savings-accounts/{accountId}/standing-instructions/{instructionId}/runs")
+    public List<StandingInstructionRunData> retrieveStandingInstructionRuns(
+            @PathParam("accountId") Long accountId,
+            @PathParam("instructionId") Long instructionId
+    ) {
+        return standingInstructionService.retrieveRuns(accountId, instructionId);
+    }
+
     @POST
     @Path("savings-accounts/{accountId}/standing-instructions/{instructionId}/{action}")
     public StandingInstructionData updateStandingInstructionStatus(
@@ -113,6 +148,22 @@ public class SavingsAccountsApiResource {
                 instructionId,
                 action
         );
+    }
+
+    @POST
+    @Path("savings-accounts/{accountId}/standing-instructions/run-due")
+    public Object runDueStandingInstructions(
+            @PathParam("accountId") Long accountId
+    ) {
+        RunDueStandingInstructionsData result =
+                standingInstructionExecutionService.runDue(accountId);
+        if (result.pausedInstructionSkipped()) {
+            return Response.status(Response.Status.CONFLICT)
+                    .entity(result)
+                    .type(MediaType.APPLICATION_JSON)
+                    .build();
+        }
+        return result;
     }
 
     @POST

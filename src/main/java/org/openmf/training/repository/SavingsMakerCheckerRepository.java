@@ -29,6 +29,14 @@ public interface SavingsMakerCheckerRepository
             SavingsMakerCheckerStatus status
     );
 
+    long countBySavingsAccountIdAndStatus(Long savingsAccountId, SavingsMakerCheckerStatus status);
+
+    long countBySavingsAccountIdAndStatusAndIdNot(
+            Long savingsAccountId,
+            SavingsMakerCheckerStatus status,
+            Long excludedId
+    );
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select request from SavingsMakerChecker request where request.id = :id")
     Optional<SavingsMakerChecker> findByIdForUpdate(@Param("id") Long id);

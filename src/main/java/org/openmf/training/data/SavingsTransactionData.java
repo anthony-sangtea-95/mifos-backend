@@ -16,6 +16,7 @@ public record SavingsTransactionData(
         Short reversed,
         String transactionGroupId,
         LocalDate interestPeriodFrom,
-        LocalDate interestPeriodTo
+        LocalDate interestPeriodTo,
+        boolean undoable
 ) {
 }

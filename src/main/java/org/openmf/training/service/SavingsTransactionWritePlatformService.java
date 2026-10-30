@@ -178,6 +178,9 @@ public class SavingsTransactionWritePlatformService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Savings account not found"
                 ));
+        if (account.getStatus() == SavingsAccountStatus.CLOSED) {
+            throw new IllegalStateException("Transactions on a closed savings account cannot be undone");
+        }
 
         SavingsTransaction transaction = transactionRepository
                 .findById(transactionId)
@@ -549,6 +552,10 @@ public class SavingsTransactionWritePlatformService {
 
         SavingsAccount toAccount =
                 transferIn.getSavingsAccount();
+        if (fromAccount.getStatus() == SavingsAccountStatus.CLOSED
+                || toAccount.getStatus() == SavingsAccountStatus.CLOSED) {
+            throw new IllegalStateException("Transfers involving a closed savings account cannot be undone");
+        }
 
         // ---------------------------------------
         // Undo TRANSFER_OUT
@@ -622,6 +629,50 @@ public class SavingsTransactionWritePlatformService {
 
     @Transactional
     public SavingsTransactionData transfer(TransferRequest request) {
+        return performTransfer(request, "TRF-" + UUID.randomUUID());
+    }
+
+    @Transactional
+    public SavingsTransactionData transfer(
+            TransferRequest request,
+            String transactionGroupId
+    ) {
+        if (transactionGroupId == null || transactionGroupId.isBlank()
+                || transactionGroupId.length() > 100) {
+            throw new IllegalArgumentException("Transfer group ID is required and must not exceed 100 characters");
+        }
+        return performTransfer(request, transactionGroupId);
+    }
+
+    @Transactional
+    public SavingsTransactionData transferForClosureSettlement(
+            TransferRequest request,
+            String transactionGroupId
+    ) {
+        if (transactionGroupId == null || !transactionGroupId.startsWith("TRF-")
+                || transactionGroupId.length() > 100) {
+            throw new IllegalArgumentException("Closure transfer group ID must use the TRF-<UUID> format");
+        }
+        try {
+            UUID.fromString(transactionGroupId.substring("TRF-".length()));
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("Closure transfer group ID must use the TRF-<UUID> format", exception);
+        }
+        return performTransfer(request, transactionGroupId, true);
+    }
+
+    private SavingsTransactionData performTransfer(
+            TransferRequest request,
+            String transactionGroupId
+    ) {
+        return performTransfer(request, transactionGroupId, false);
+    }
+
+    private SavingsTransactionData performTransfer(
+            TransferRequest request,
+            String transactionGroupId,
+            boolean closingSourceAccount
+    ) {
         if (request.fromAccountNo().equals(request.toAccountNo())) {
             throw new IllegalArgumentException(
                     "Source and destination accounts must be different"
@@ -652,8 +703,10 @@ public class SavingsTransactionWritePlatformService {
 
         BigDecimal amount = request.amount();
 
-        BigDecimal availableBalance =
-                fromAccount.getAvailableBalance(getActiveHoldAmount(fromAccount.getId()));
+        BigDecimal activeHolds = getActiveHoldAmount(fromAccount.getId());
+        BigDecimal availableBalance = closingSourceAccount
+                ? fromAccount.getBalance().subtract(activeHolds)
+                : fromAccount.getAvailableBalance(activeHolds);
 
         if (availableBalance.compareTo(amount) < 0) {
             throw new IllegalArgumentException(
@@ -665,8 +718,6 @@ public class SavingsTransactionWritePlatformService {
          * One group ID represents one transfer operation.
          * Both TRANSFER_OUT and TRANSFER_IN use the same ID.
          */
-        String transactionGroupId = "TRF-" + UUID.randomUUID();
-
         LocalDateTime now = LocalDateTime.now();
 
         // -----------------------------------
@@ -760,7 +811,27 @@ public class SavingsTransactionWritePlatformService {
                 transaction.getReversed(),
                 transaction.getTransactionGroupId(),
                 transaction.getInterestPeriodFrom(),
-                transaction.getInterestPeriodTo()
+                transaction.getInterestPeriodTo(),
+                isUndoableWhileAccountOpen(transaction)
         );
+    }
+
+    private boolean isUndoableWhileAccountOpen(SavingsTransaction transaction) {
+        if (transaction.getSavingsAccount().getStatus() == SavingsAccountStatus.CLOSED) {
+            return false;
+        }
+        if (transaction.getTransactionType() != SavingsTransactionType.TRANSFER_IN
+                && transaction.getTransactionType() != SavingsTransactionType.TRANSFER_OUT) {
+            return true;
+        }
+
+        String groupId = transaction.getTransactionGroupId();
+        if (groupId == null || groupId.isBlank()) {
+            return false;
+        }
+        List<SavingsTransaction> transferGroup = transactionRepository.findByTransactionGroupId(groupId);
+        return transferGroup.size() == 2
+                && transferGroup.stream().noneMatch(groupTransaction ->
+                groupTransaction.getSavingsAccount().getStatus() == SavingsAccountStatus.CLOSED);
     }
 }

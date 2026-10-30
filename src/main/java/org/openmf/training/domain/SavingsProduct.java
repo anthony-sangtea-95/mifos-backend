@@ -31,4 +31,7 @@ public class SavingsProduct {
 
     @Column(name = "withdrawal_fee", nullable = false)
     private BigDecimal withdrawalFee;
+
+    @Column(name = "closure_fee", nullable = false)
+    private BigDecimal closureFee;
 }

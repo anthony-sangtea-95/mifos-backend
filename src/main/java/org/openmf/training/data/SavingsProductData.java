@@ -9,6 +9,7 @@ public record SavingsProductData(
         BigDecimal nominalAnnualInterestRate,
         BigDecimal minRequiredBalance,
         BigDecimal withdrawalFee,
+        BigDecimal closureFee,
         LocalDateTime createdOn
 ) {
 }

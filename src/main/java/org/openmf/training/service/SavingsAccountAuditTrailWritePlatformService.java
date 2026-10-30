@@ -36,7 +36,7 @@ public class SavingsAccountAuditTrailWritePlatformService {
             );
         }
         return auditRepository
-                .findBySavingsAccountIdOrderByCreatedOnDescIdDesc(accountId)
+                .findBySavingsAccountIdOrderByCreatedOnAscIdAsc(accountId)
                 .stream()
                 .map(this::toData)
                 .toList();

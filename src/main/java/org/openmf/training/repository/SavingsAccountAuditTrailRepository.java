@@ -8,7 +8,7 @@ import java.util.List;
 public interface SavingsAccountAuditTrailRepository
         extends JpaRepository<SavingsAccountAuditTrail, Long> {
 
-    List<SavingsAccountAuditTrail> findBySavingsAccountIdOrderByCreatedOnDescIdDesc(
+    List<SavingsAccountAuditTrail> findBySavingsAccountIdOrderByCreatedOnAscIdAsc(
             Long savingsAccountId
     );
 }

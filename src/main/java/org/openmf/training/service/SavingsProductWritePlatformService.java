@@ -7,6 +7,7 @@ import org.openmf.training.repository.SavingsProductRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -51,12 +52,20 @@ public class SavingsProductWritePlatformService {
                     "Nominal annual interest rate is required"
             );
         }
+        validateClosureFee(request.closureFee());
 
         SavingsProduct product = new SavingsProduct();
         product.setName(request.name());
         product.setNominalAnnualInterestRate(request.nominalAnnualInterestRate());
-        product.setMinRequiredBalance(request.minRequiredBalance());
-        product.setWithdrawalFee(request.withdrawalFee());
+        product.setMinRequiredBalance(
+                request.minRequiredBalance() != null ? request.minRequiredBalance() : BigDecimal.ZERO
+        );
+        product.setWithdrawalFee(
+                request.withdrawalFee() != null ? request.withdrawalFee() : BigDecimal.ZERO
+        );
+        product.setClosureFee(
+                request.closureFee() != null ? request.closureFee() : BigDecimal.ZERO
+        );
         product.setCreatedOn(LocalDateTime.now());
 
         return toData(productRepository.save(product));
@@ -67,6 +76,7 @@ public class SavingsProductWritePlatformService {
             Long id,
             CreateSavingsProductRequest request
     ) {
+        validateClosureFee(request.closureFee());
 
         SavingsProduct product = productRepository.findById(id)
                 .orElseThrow(() ->
@@ -77,6 +87,15 @@ public class SavingsProductWritePlatformService {
         product.setNominalAnnualInterestRate(
                 request.nominalAnnualInterestRate()
         );
+        if (request.minRequiredBalance() != null) {
+            product.setMinRequiredBalance(request.minRequiredBalance());
+        }
+        if (request.withdrawalFee() != null) {
+            product.setWithdrawalFee(request.withdrawalFee());
+        }
+        if (request.closureFee() != null) {
+            product.setClosureFee(request.closureFee());
+        }
 
         return toData(productRepository.save(product));
     }
@@ -88,7 +107,14 @@ public class SavingsProductWritePlatformService {
                 product.getNominalAnnualInterestRate(),
                 product.getMinRequiredBalance(),
                 product.getWithdrawalFee(),
+                product.getClosureFee(),
                 product.getCreatedOn()
         );
+    }
+
+    private void validateClosureFee(BigDecimal closureFee) {
+        if (closureFee != null && closureFee.signum() < 0) {
+            throw new IllegalArgumentException("Closure fee cannot be negative");
+        }
     }
 }

@@ -31,4 +31,6 @@ public interface SavingsAccountHoldRepository
             @Param("accountId") Long accountId,
             @Param("status") SavingsAccountHoldStatus status
     );
+
+    long countBySavingsAccountIdAndStatus(Long accountId, SavingsAccountHoldStatus status);
 }

@@ -1,7 +1,11 @@
 package org.openmf.training.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.openmf.training.data.CreateSavingsAccountsCheckMakerRequest;
+import org.openmf.training.data.ClosureSettlementTransferPayload;
 import org.openmf.training.data.SavingsMakerCheckerData;
+import org.openmf.training.data.TransferRequest;
 import org.openmf.training.domain.SavingsAccount;
 import org.openmf.training.domain.SavingsAccountHoldStatus;
 import org.openmf.training.domain.SavingsAccountStatus;
@@ -10,10 +14,13 @@ import org.openmf.training.domain.SavingsMakerCheckerCommandType;
 import org.openmf.training.domain.SavingsMakerCheckerStatus;
 import org.openmf.training.domain.SavingsTransaction;
 import org.openmf.training.domain.SavingsTransactionType;
+import org.openmf.training.domain.StandingInstructionRun;
 import org.openmf.training.repository.SavingsAccountHoldRepository;
 import org.openmf.training.repository.SavingsAccountRepository;
 import org.openmf.training.repository.SavingsMakerCheckerRepository;
 import org.openmf.training.repository.SavingsTransactionRepository;
+import org.openmf.training.repository.StandingInstructionRunRepository;
+import org.openmf.training.service.SavingsAccountClosureWritePlatformService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -32,12 +39,16 @@ public class SavingsAccountsCheckMakerWritePlatformService {
 
     private static final short NOT_REVERSED = 0;
     private static final int MAX_REJECT_REASON_LENGTH = 500;
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final SavingsMakerCheckerRepository checkMakerRepository;
     private final SavingsAccountRepository accountRepository;
     private final SavingsTransactionRepository transactionRepository;
     private final SavingsAccountHoldRepository holdRepository;
     private final SavingsAccountAuditTrailWritePlatformService auditTrailService;
+    private final SavingsTransactionWritePlatformService transactionService;
+    private final StandingInstructionRunRepository standingInstructionRunRepository;
+    private final SavingsAccountClosureWritePlatformService closureService;
     private final BigDecimal approvalThreshold;
 
     public SavingsAccountsCheckMakerWritePlatformService(
@@ -46,6 +57,9 @@ public class SavingsAccountsCheckMakerWritePlatformService {
             SavingsTransactionRepository transactionRepository,
             SavingsAccountHoldRepository holdRepository,
             SavingsAccountAuditTrailWritePlatformService auditTrailService,
+            SavingsTransactionWritePlatformService transactionService,
+            StandingInstructionRunRepository standingInstructionRunRepository,
+            SavingsAccountClosureWritePlatformService closureService,
             @Value("${training.savings.maker-checker.threshold:10000}") BigDecimal approvalThreshold
     ) {
         this.checkMakerRepository = checkMakerRepository;
@@ -53,7 +67,18 @@ public class SavingsAccountsCheckMakerWritePlatformService {
         this.transactionRepository = transactionRepository;
         this.holdRepository = holdRepository;
         this.auditTrailService = auditTrailService;
+        this.transactionService = transactionService;
+        this.standingInstructionRunRepository = standingInstructionRunRepository;
+        this.closureService = closureService;
         this.approvalThreshold = approvalThreshold;
+    }
+
+    private ClosureSettlementTransferPayload closureSettlementPayload(String payloadJson) {
+        try {
+            return OBJECT_MAPPER.readValue(payloadJson, ClosureSettlementTransferPayload.class);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Pending closure settlement has an invalid payload", exception);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -79,6 +104,10 @@ public class SavingsAccountsCheckMakerWritePlatformService {
         }
         if (request.transactionType() == null) {
             throw new IllegalArgumentException("transactionType is required");
+        }
+        if (request.transactionType() == SavingsMakerCheckerCommandType.TRANSFER) {
+            throw new IllegalArgumentException(
+                    "Transfer approvals must be created by a standing instruction");
         }
         requirePositiveAmount(request.amount());
         if (request.amount().compareTo(approvalThreshold) < 0) {
@@ -118,7 +147,71 @@ public class SavingsAccountsCheckMakerWritePlatformService {
                 .orElseThrow(() -> new IllegalArgumentException(
                         "Savings account not found: " + checkMaker.getSavingsAccount().getId()));
         requireActiveAccount(account);
-        postTransaction(account, checkMaker.getCommandType(), checkMaker.getAmount());
+        if (checkMaker.getCommandType() == SavingsMakerCheckerCommandType.TRANSFER) {
+            var standingInstructionRun = standingInstructionRunRepository.findByMakerCheckerId(checkMaker.getId());
+            if (standingInstructionRun.isPresent()) {
+                StandingInstructionRun run = standingInstructionRun.get();
+                var transfer = transactionService.transfer(
+                        transferRequest(checkMaker.getPayloadJson()),
+                        "TRF-" + UUID.randomUUID()
+                );
+                run.setStatus("SUCCESS");
+                run.setReason(null);
+                run.setTransferGroupId(transfer.transactionGroupId());
+                standingInstructionRunRepository.save(run);
+                auditTrailService.record(
+                        run.getStandingInstruction().getFromAccount(),
+                        "SI_EXECUTE",
+                        "SI_EXECUTE id=" + run.getStandingInstruction().getId()
+                                + " due=" + run.getDueDate()
+                                + " SUCCESS groupId=" + run.getTransferGroupId(),
+                        run.getStandingInstruction().getAmount()
+                );
+            } else {
+                ClosureSettlementTransferPayload payload = closureSettlementPayload(checkMaker.getPayloadJson());
+                if (!payload.closureSettlement()
+                        || !account.getAccountNo().equals(payload.fromAccountNo())
+                        || payload.amount() == null
+                        || checkMaker.getAmount() == null
+                        || checkMaker.getAmount().compareTo(payload.amount()) != 0) {
+                    throw new IllegalStateException("Pending transfer is not linked to a standing instruction or closure settlement");
+                }
+                SavingsAccount destinationAccount = accountRepository.findByAccountNo(payload.toAccountNo())
+                        .orElseThrow(() -> new IllegalArgumentException("Settlement destination account not found"));
+                closureService.validatePendingSettlementForApproval(
+                        account.getId(),
+                        destinationAccount.getId(),
+                        payload.amount(),
+                        payload.closureFee(),
+                        checkMaker.getId()
+                );
+                checkMaker.setStatus(SavingsMakerCheckerStatus.APPROVED);
+                checkMaker.setCheckedBy(checker);
+                checkMaker.setCheckedOn(LocalDateTime.now());
+                checkMakerRepository.save(checkMaker);
+                auditTrailService.record(
+                        account,
+                        "CHECKER_APPROVE",
+                        "CHECKER_APPROVE pendingId=" + checkMaker.getId()
+                                + " type=" + checkMaker.getCommandType()
+                                + " amount=" + checkMaker.getAmount(),
+                        checkMaker.getAmount()
+                );
+                closureService.chargeApprovedClosureFee(account.getId(), payload.closureFee());
+                String groupId = "TRF-" + UUID.randomUUID();
+                transactionService.transferForClosureSettlement(payload.toTransferRequest(), groupId);
+                closureService.completeApprovedSettlement(
+                        account.getId(),
+                        destinationAccount.getId(),
+                        payload.closureFee(),
+                        checkMaker.getId(),
+                        groupId
+                );
+                return toData(checkMaker);
+            }
+        } else {
+            postTransaction(account, checkMaker.getCommandType(), checkMaker.getAmount());
+        }
 
         checkMaker.setStatus(SavingsMakerCheckerStatus.APPROVED);
         checkMaker.setCheckedBy(checker);
@@ -126,13 +219,21 @@ public class SavingsAccountsCheckMakerWritePlatformService {
         SavingsMakerChecker savedRequest = checkMakerRepository.save(checkMaker);
         auditTrailService.record(
                 account,
-                "MAKER_APPROVE",
-                "MAKER_APPROVE pendingId=" + savedRequest.getId()
+                "CHECKER_APPROVE",
+                "CHECKER_APPROVE pendingId=" + savedRequest.getId()
                         + " type=" + savedRequest.getCommandType()
                         + " amount=" + savedRequest.getAmount(),
                 savedRequest.getAmount()
         );
         return toData(savedRequest);
+    }
+
+    private TransferRequest transferRequest(String payloadJson) {
+        try {
+            return OBJECT_MAPPER.readValue(payloadJson, TransferRequest.class);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("Pending transfer approval has an invalid payload", exception);
+        }
     }
 
     @Transactional
@@ -152,11 +253,22 @@ public class SavingsAccountsCheckMakerWritePlatformService {
         checkMaker.setCheckedBy(checker);
         checkMaker.setCheckedOn(LocalDateTime.now());
         checkMaker.setRejectReason(normalizedReason);
+        if (checkMaker.getCommandType() == SavingsMakerCheckerCommandType.TRANSFER) {
+            var standingInstructionRun = standingInstructionRunRepository.findByMakerCheckerId(checkMaker.getId());
+            if (standingInstructionRun.isPresent()) {
+                StandingInstructionRun run = standingInstructionRun.get();
+                run.setStatus("REJECT");
+                run.setReason(normalizedReason);
+                standingInstructionRunRepository.save(run);
+            } else if (!closureSettlementPayload(checkMaker.getPayloadJson()).closureSettlement()) {
+                throw new IllegalStateException("Pending transfer is not linked to a standing instruction or closure settlement");
+            }
+        }
         SavingsMakerChecker savedRequest = checkMakerRepository.save(checkMaker);
         auditTrailService.record(
                 checkMaker.getSavingsAccount(),
-                "MAKER_REJECT",
-                "MAKER_REJECT pendingId=" + savedRequest.getId()
+                "CHECKER_REJECT",
+                "CHECKER_REJECT pendingId=" + savedRequest.getId()
                         + " type=" + savedRequest.getCommandType()
                         + " amount=" + savedRequest.getAmount()
                         + " reason=" + normalizedReason,
@@ -175,8 +287,8 @@ public class SavingsAccountsCheckMakerWritePlatformService {
         SavingsMakerChecker savedRequest = checkMakerRepository.save(checkMaker);
         auditTrailService.record(
                 checkMaker.getSavingsAccount(),
-                "MAKER_CANCEL",
-                "MAKER_CANCEL pendingId=" + savedRequest.getId()
+                "CHECKER_CANCEL",
+                "CHECKER_CANCEL pendingId=" + savedRequest.getId()
                         + " type=" + savedRequest.getCommandType()
                         + " amount=" + savedRequest.getAmount(),
                 savedRequest.getAmount()
@@ -244,6 +356,8 @@ public class SavingsAccountsCheckMakerWritePlatformService {
             case DEPOSIT -> SavingsTransactionType.DEPOSIT;
             case WITHDRAWAL -> SavingsTransactionType.WITHDRAWAL;
             case INTEREST -> SavingsTransactionType.INTEREST;
+            case TRANSFER -> throw new IllegalArgumentException(
+                    "Transfer requests must be approved through transfer processing");
         };
     }
 
